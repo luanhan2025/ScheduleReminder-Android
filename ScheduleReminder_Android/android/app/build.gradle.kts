@@ -29,9 +29,16 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
-    kotlinOptions { jvmTarget = "17" }
     buildFeatures { compose = true }
-    sourceSets["main"].java.srcDir("src/generated/kotlin")
+        sourceSets["main"].java.srcDir("src/generated/kotlin")
+}
+
+kotlin {
+    compilerOptions {
+        jvmTarget.set(
+            org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17
+        )
+    }
 }
 
 dependencies {
