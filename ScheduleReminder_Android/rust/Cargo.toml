@@ -1,0 +1,33 @@
+[package]
+name = "schedule_core"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+
+[lib]
+name = "schedule_core"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+uniffi = "=0.32.2"
+# Bundle SQLite, avoiding reliance on Android's private sqlite library.
+rusqlite = { version = "0.37", default-features = false, features = ["bundled"] }
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+chrono-tz = { version = "0.10", default-features = false }
+thiserror = "2"
+
+[features]
+bindgen = ["uniffi/cli"]
+
+[[bin]]
+name = "uniffi-bindgen-android"
+path = "src/bin/uniffi-bindgen-android.rs"
+required-features = ["bindgen"]
+
+[profile.release]
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = "debuginfo"

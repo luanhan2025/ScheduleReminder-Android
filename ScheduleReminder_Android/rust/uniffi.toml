@@ -1,0 +1,4 @@
+[bindings.kotlin]
+package_name = "com.scheduler.reminder.core"
+cdylib_name = "schedule_core"
+android = true
