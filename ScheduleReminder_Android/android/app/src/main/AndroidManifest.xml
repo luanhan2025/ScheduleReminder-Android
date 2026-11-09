@@ -18,6 +18,11 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <provider
+            android:name=".ReminderSoundProvider"
+            android:authorities="${applicationId}.sounds"
+            android:exported="true"
+            android:grantUriPermissions="true" />
         <receiver android:name=".ReminderReceiver" android:exported="false" />
         <receiver android:name=".RescheduleReceiver" android:exported="false">
             <intent-filter>

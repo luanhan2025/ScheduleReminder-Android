@@ -9,6 +9,9 @@ import android.os.Build
 import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -31,6 +34,10 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.scheduler.reminder.core.Task
+import com.scheduler.reminder.core.TaskOptions
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.time.Instant
 import java.time.LocalDateTime
 import java.time.ZoneId
@@ -81,8 +88,8 @@ fun ScheduleReminderUI(vm: ScheduleViewModel) {
             EditTaskScreen(
                 task = selected,
                 onBack = { editing = false },
-                onSave = { title, notes, local, zone ->
-                    vm.save(selected?.id, title, notes, local, zone) { editing = false }
+                onSave = { title, notes, local, zone, options ->
+                    vm.save(selected?.id, title, notes, local, zone, options) { editing = false }
                 }
             )
         } else {
@@ -285,6 +292,15 @@ private fun TaskCard(task: Task, onToggle: () -> Unit, onEdit: () -> Unit, onDel
                 Text("◷  ${dueLocal.format(displayDateFormat)}${if (overdue) "  •  Quá hạn" else ""}",
                     color = if (overdue) Color(0xFFBE4B49) else Indigo,
                     style = MaterialTheme.typography.labelMedium)
+                if (task.repeatMode != "once") {
+                    val label = if (task.repeatMode == "interval") "Cách ${task.intervalMinutes} phút" else "Khung giờ hằng ngày"
+                    Text("↻  $label · ${task.durationDays} ngày · ${task.reminderCount} lần nhắc",
+                        color = SoftInk, style = MaterialTheme.typography.bodySmall)
+                }
+                if (task.soundName.isNotBlank()) {
+                    Text("♫  ${task.soundName}", color = SoftInk, style = MaterialTheme.typography.bodySmall,
+                        maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     TextButton(onClick = onEdit, contentPadding = PaddingValues(horizontal = 8.dp)) { Text("Sửa") }
                     TextButton(onClick = onDelete, contentPadding = PaddingValues(horizontal = 8.dp)) {
@@ -299,9 +315,10 @@ private fun TaskCard(task: Task, onToggle: () -> Unit, onEdit: () -> Unit, onDel
 @Composable
 private fun EditTaskScreen(
     task: Task?, onBack: () -> Unit,
-    onSave: (title: String, notes: String, dueLocal: String, zone: String) -> Unit
+    onSave: (title: String, notes: String, dueLocal: String, zone: String, options: TaskOptions) -> Unit
 ) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     var title by remember(task?.id) { mutableStateOf(task?.title ?: "") }
     var notes by remember(task?.id) { mutableStateOf(task?.notes ?: "") }
     var dateTime by remember(task?.id) {
@@ -309,64 +326,175 @@ private fun EditTaskScreen(
             LocalDateTime.ofInstant(Instant.ofEpochSecond(it.dueAtUtc), ZoneId.systemDefault())
         } ?: LocalDateTime.now().plusHours(1).withSecond(0).withNano(0))
     }
+    var mode by remember(task?.id) { mutableStateOf(task?.repeatMode ?: "once") }
+    var days by remember(task?.id) { mutableIntStateOf(task?.durationDays?.toInt()?.coerceIn(1, 7) ?: 7) }
+    var interval by remember(task?.id) {
+        mutableIntStateOf(task?.intervalMinutes?.toInt()?.takeIf { it in listOf(30, 60, 120, 180, 240, 360, 720, 1440) } ?: 240)
+    }
+    var slots by remember(task?.id) {
+        mutableStateOf(task?.dailyTimesCsv?.split(',')?.filter { it.isNotBlank() } ?: listOf("08:00", "12:00", "20:00"))
+    }
+    var soundId by remember(task?.id) { mutableStateOf(task?.soundId ?: "") }
+    var soundName by remember(task?.id) { mutableStateOf(task?.soundName ?: "") }
+    var audioError by remember(task?.id) { mutableStateOf<String?>(null) }
+    var importing by remember { mutableStateOf(false) }
+    val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) {
+            importing = true
+            scope.launch {
+                try {
+                    val picked = withContext(Dispatchers.IO) { SoundStore.importSound(context, uri) }
+                    soundId = picked.id
+                    soundName = picked.displayName
+                    audioError = null
+                } catch (e: Exception) {
+                    audioError = e.message ?: "Không đọc được âm thanh đã chọn"
+                } finally { importing = false }
+            }
+        }
+    }
+    val canSave = title.isNotBlank() && !importing && (mode != "slots" || slots.isNotEmpty())
     Scaffold(
         containerColor = Calm,
         bottomBar = {
             Surface(color = Calm) {
                 Button(
                     onClick = {
-                        onSave(title.trim(), notes, dateTime.format(isoFormat), ZoneId.systemDefault().id)
+                        onSave(title.trim(), notes, dateTime.format(isoFormat), ZoneId.systemDefault().id,
+                            TaskOptions(
+                                soundId = soundId,
+                                soundName = soundName,
+                                repeatMode = mode,
+                                durationDays = days.toUInt(),
+                                intervalMinutes = if (mode == "interval") interval.toUInt() else 0u,
+                                dailyTimesCsv = if (mode == "slots") slots.sorted().joinToString(",") else ""
+                            )
+                        )
                     },
-                    enabled = title.isNotBlank(),
-                    modifier = Modifier.fillMaxWidth().padding(20.dp).height(54.dp),
-                    shape = RoundedCornerShape(17.dp)
-                ) { Text(if (task == null) "Lưu công việc" else "Cập nhật công việc", fontWeight = FontWeight.Bold) }
+                    enabled = canSave,
+                    modifier = Modifier.fillMaxWidth().padding(16.dp).height(52.dp),
+                    shape = RoundedCornerShape(16.dp)
+                ) {
+                    Text(if (task == null) "Lưu lịch nhắc" else "Cập nhật lịch nhắc", fontWeight = FontWeight.Bold)
+                }
             }
         }
     ) { padding ->
         Column(
-            Modifier.fillMaxSize().padding(padding).padding(horizontal = 22.dp),
-            verticalArrangement = Arrangement.spacedBy(18.dp)
+            Modifier.fillMaxSize().padding(padding).verticalScroll(rememberScrollState())
+                .padding(horizontal = 20.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
-            Spacer(Modifier.height(18.dp))
+            Spacer(Modifier.height(8.dp))
             TextButton(onClick = onBack, contentPadding = PaddingValues(0.dp)) { Text("‹  Quay lại") }
             Text(if (task == null) "Thêm công việc" else "Chỉnh sửa công việc",
-                fontWeight = FontWeight.Bold, fontSize = 27.sp, color = Ink)
-            Text("Những việc nhỏ, tiến bộ mỗi ngày.", color = SoftInk)
+                fontWeight = FontWeight.Bold, fontSize = 26.sp, color = Ink)
             OutlinedTextField(
                 value = title, onValueChange = { if (it.length <= 180) title = it },
-                label = { Text("Tên công việc") },
-                placeholder = { Text("Ví dụ: Học bài, họp nhóm…") },
-                singleLine = true, keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
+                label = { Text("Tên công việc") }, singleLine = true,
                 modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp)
             )
             OutlinedTextField(
                 value = notes, onValueChange = { if (it.length <= 4000) notes = it },
-                label = { Text("Ghi chú (không bắt buộc)") },
-                minLines = 3, maxLines = 5,
+                label = { Text("Ghi chú") }, minLines = 2, maxLines = 4,
                 modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp)
             )
-            Text("Thời gian nhắc", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            HorizontalDivider(color = Color(0xFFE8E9F4))
+            Text("Ngày giờ bắt đầu", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                OutlinedButton(
-                    onClick = {
-                        DatePickerDialog(context, { _, year, month, day ->
-                            dateTime = dateTime.withYear(year).withMonth(month + 1).withDayOfMonth(day)
-                        }, dateTime.year, dateTime.monthValue - 1, dateTime.dayOfMonth).show()
-                    }, modifier = Modifier.weight(1f)
-                ) { Text(dateTime.format(DateTimeFormatter.ofPattern("dd/MM/yyyy"))) }
-                OutlinedButton(
-                    onClick = {
-                        TimePickerDialog(context, { _, hour, minute ->
-                            dateTime = dateTime.withHour(hour).withMinute(minute).withSecond(0)
-                        }, dateTime.hour, dateTime.minute, true).show()
-                    }, modifier = Modifier.weight(1f)
-                ) { Text(dateTime.format(DateTimeFormatter.ofPattern("HH:mm"))) }
+                OutlinedButton(onClick = {
+                    DatePickerDialog(context, { _, year, month, day ->
+                        dateTime = dateTime.withYear(year).withMonth(month + 1).withDayOfMonth(day)
+                    }, dateTime.year, dateTime.monthValue - 1, dateTime.dayOfMonth).show()
+                }, modifier = Modifier.weight(1f)) {
+                    Text(dateTime.format(DateTimeFormatter.ofPattern("dd/MM/yyyy")))
+                }
+                OutlinedButton(onClick = {
+                    TimePickerDialog(context, { _, hour, minute ->
+                        dateTime = dateTime.withHour(hour).withMinute(minute).withSecond(0)
+                    }, dateTime.hour, dateTime.minute, true).show()
+                }, modifier = Modifier.weight(1f)) {
+                    Text(dateTime.format(DateTimeFormatter.ofPattern("HH:mm")))
+                }
             }
-            Text("Múi giờ: ${ZoneId.systemDefault().id}", color = SoftInk,
-                style = MaterialTheme.typography.bodySmall)
-            Text("Nếu đi sang múi giờ khác, lời nhắc vẫn chạy tại cùng thời điểm UTC.",
-                color = SoftInk, style = MaterialTheme.typography.bodySmall)
+            Text("Múi giờ: ${ZoneId.systemDefault().id}. Lời nhắc cố định theo UTC sau khi lưu.",
+                style = MaterialTheme.typography.bodySmall, color = SoftInk)
+
+            HorizontalDivider(color = Color(0xFFE8E9F4))
+            Text("Lặp thông báo trong tối đa 7 ngày", style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold)
+            Text("Chọn cách nhắc", color = SoftInk, style = MaterialTheme.typography.bodySmall)
+            Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                listOf(
+                    "once" to "Chỉ nhắc 1 lần",
+                    "slots" to "Theo khung giờ mỗi ngày",
+                    "interval" to "Theo khoảng thời gian"
+                ).forEach { (value, label) ->
+                    Row(verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth()) {
+                        RadioButton(selected = mode == value, onClick = { mode = value })
+                        Text(label, modifier = Modifier.weight(1f))
+                    }
+                }
+            }
+            if (mode != "once") {
+                Text("Thời gian áp dụng", fontWeight = FontWeight.SemiBold)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf(1, 3, 7).forEach { d ->
+                        FilterChip(selected = days == d, onClick = { days = d },
+                            label = { Text("$d ngày") })
+                    }
+                }
+                if (mode == "slots") {
+                    Text("Các giờ nhắc trong mỗi ngày (tối đa 12)", fontWeight = FontWeight.SemiBold)
+                    Text("Ví dụ: 08:00, 12:00 và 20:00. Có thể chọn nhiều giờ.",
+                        style = MaterialTheme.typography.bodySmall, color = SoftInk)
+                    Row(horizontalArrangement = Arrangement.spacedBy(7.dp),
+                        modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())) {
+                        slots.sorted().forEach { hour ->
+                            InputChip(selected = true,
+                                onClick = { slots = slots.filterNot { it == hour } },
+                                label = { Text("$hour ×") })
+                        }
+                    }
+                    OutlinedButton(onClick = {
+                        TimePickerDialog(context, { _, h, m ->
+                            val time = "%02d:%02d".format(h, m)
+                            if (time !in slots && slots.size < 12) slots = slots + time
+                        }, 9, 0, true).show()
+                    }, enabled = slots.size < 12) { Text("+ Thêm khung giờ") }
+                    if (slots.isEmpty()) Text("Chọn ít nhất một giờ nhắc", color = Color(0xFFBA3A4A))
+                } else if (mode == "interval") {
+                    Text("Khoảng cách giữa các lần nhắc", fontWeight = FontWeight.SemiBold)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())) {
+                        listOf(30, 60, 120, 180, 240, 360, 720, 1440).forEach { minutes ->
+                            val label = if (minutes < 60) "$minutes phút" else "${minutes / 60} giờ"
+                            FilterChip(selected = interval == minutes,
+                                onClick = { interval = minutes }, label = { Text(label) })
+                        }
+                    }
+                    Text("Ví dụ: 4 giờ/lần trong 7 ngày = 42 lần nhắc.",
+                        style = MaterialTheme.typography.bodySmall, color = SoftInk)
+                }
+            }
+            HorizontalDivider(color = Color(0xFFE8E9F4))
+            Text("Âm thanh thông báo", style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold)
+            Text(if (soundName.isBlank()) "Đang dùng âm thanh mặc định" else "Đã chọn: $soundName",
+                style = MaterialTheme.typography.bodyMedium, color = SoftInk)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = { picker.launch(arrayOf("audio/*")) }, enabled = !importing) {
+                    Text(if (importing) "Đang nhập…" else "Chọn âm thanh từ máy")
+                }
+                if (soundId.isNotBlank()) TextButton(onClick = { soundId = ""; soundName = "" }) {
+                    Text("Mặc định")
+                }
+            }
+            Text("Hỗ trợ MP3, OGG, WAV, M4A, AAC dưới 8 MB. Mỗi công việc có thể chọn chuông riêng.",
+                style = MaterialTheme.typography.bodySmall, color = SoftInk)
+            if (audioError != null) Text(audioError.orEmpty(), color = Color(0xFFBA3A4A))
+            Spacer(Modifier.height(24.dp))
         }
     }
 }

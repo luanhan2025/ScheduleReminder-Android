@@ -5,6 +5,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.scheduler.reminder.core.ScheduleManager
 import com.scheduler.reminder.core.Task
+import com.scheduler.reminder.core.TaskOptions
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -35,7 +36,7 @@ class ScheduleViewModel(app: Application) : AndroidViewModel(app) {
                     try {
                         val app = getApplication<Application>()
                         val tasks = CoreHolder.get(app).listTasks()
-                        ReminderScheduler.reconcile(app, tasks)
+                        ReminderScheduler.reconcile(app)
                         _state.value = ScheduleState(tasks, false)
                     } catch (t: Exception) {
                         _state.value = _state.value.copy(loading = false, error = readable(t))
@@ -49,11 +50,11 @@ class ScheduleViewModel(app: Application) : AndroidViewModel(app) {
 
     fun save(
         taskId: String?, title: String, notes: String,
-        dueLocal: String, timeZone: String, onSuccess: () -> Unit
+        dueLocal: String, timeZone: String, options: TaskOptions, onSuccess: () -> Unit
     ) {
         change(onSuccess) { manager ->
-            if (taskId == null) manager.createTask(title, notes, dueLocal, timeZone)
-            else manager.updateTask(taskId, title, notes, dueLocal, timeZone)
+            if (taskId == null) manager.createTaskWithOptions(title, notes, dueLocal, timeZone, options)
+            else manager.updateTaskWithOptions(taskId, title, notes, dueLocal, timeZone, options)
         }
     }
 
@@ -74,7 +75,7 @@ class ScheduleViewModel(app: Application) : AndroidViewModel(app) {
                         val core = CoreHolder.get(app)
                         block(core)
                         val tasks = core.listTasks()
-                        ReminderScheduler.reconcile(app, tasks)
+                        ReminderScheduler.reconcile(app)
                         _state.value = ScheduleState(tasks, false)
                         true
                     } catch (t: Exception) {
